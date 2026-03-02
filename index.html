@@ -178,9 +178,9 @@ function createMonster(baseRound, forceType = null) {
     color: type.color,
     r: type.r,
     speed: (70 + baseRound * 12) * type.speedMult,
-    health: (40 + baseRound * 14) * type.hpMult,
-    maxHealth: (40 + baseRound * 14) * type.hpMult,
-    contactDamagePerSecond: (12 + baseRound * 1.5) * type.damageMult,
+    health: (10 + (baseRound - 1) * 14) * type.hpMult,
+    maxHealth: (10 + (baseRound - 1) * 14) * type.hpMult,
+    contactDamagePerSecond: (5 + (baseRound - 1) * 1.5) * type.damageMult,
     isBoss: false,
   };
 }
