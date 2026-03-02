@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Wave Shooter — Fixed Version</title>
+  <style>
+    body { margin: 0; background: #0b1b2a; color: #fff; overflow: hidden; font-family: Arial, sans-serif; }
+    canvas { display: block; cursor: crosshair; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W = canvas.width = innerWidth;
+let H = canvas.height = innerHeight;
+
+window.addEventListener('resize', () => {
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+});
+
+let player;
+let bullets;
+let enemies;
+let keys;
+let damageNumbers;
+let shopButtons;
+let uiButtons;
+let powerUps;
+let lastTime;
+let round;
+let coins;
+let gameOver;
+let inShop;
+let endlessMode;
+let awaitingEndlessChoice;
+let survivalTime;
+let endlessDifficultyTimer;
+let nextRandomBossAt;
+let aimX;
+let aimY;
+let killStreak;
+let streakTimer;
+let streakMultiplier;
+let frenzyTimer;
+
+const monsterTypes = [
+  { name: 'slime', color: '#61d66f', r: 18, speedMult: 0.9, hpMult: 0.9, damageMult: 0.9 },
+  { name: 'goblin', color: '#7db340', r: 20, speedMult: 1.1, hpMult: 1.0, damageMult: 1.0 },
+  { name: 'skeleton', color: '#d8d8d8', r: 19, speedMult: 1.15, hpMult: 0.95, damageMult: 1.1 },
+  { name: 'brute', color: '#9b4d3f', r: 24, speedMult: 0.8, hpMult: 1.35, damageMult: 1.3 },
+];
+
+const endlessShopButton = { x: 0, y: 0, w: 90, h: 32 };
+
+function resetGame() {
+  player = {
+    x: W / 2,
+    y: H / 2,
+    r: 20,
+    speed: 220,
+    damage: 12,
+    maxHealth: 120,
+    health: 120,
+    contactDefense: 0,
+    fireRateMult: 1,
+    regenPerSecond: 0,
+    dashCooldown: 0,
+    dashInvuln: 0,
+  };
+
+  bullets = [];
+  enemies = [];
+  keys = {};
+  damageNumbers = [];
+  shopButtons = [];
+  uiButtons = [];
+  powerUps = [];
+  lastTime = performance.now();
+  round = 1;
+  coins = 0;
+  gameOver = false;
+  inShop = false;
+  endlessMode = false;
+  awaitingEndlessChoice = false;
+  survivalTime = 0;
+  endlessDifficultyTimer = 0;
+  nextRandomBossAt = 12 + Math.random() * 10;
+  aimX = W / 2;
+  aimY = H / 2;
+  killStreak = 0;
+  streakTimer = 0;
+  streakMultiplier = 1;
+  frenzyTimer = 0;
+  spawnWave();
+}
+
+window.addEventListener('mousemove', e => {
+  aimX = e.clientX;
+  aimY = e.clientY;
+});
+
+window.addEventListener('keydown', e => {
+  const key = e.key.toLowerCase();
+  keys[key] = true;
+
+  if (key === 'shift' && canDash()) {
+    triggerDash();
+  }
+
+  if (inShop) {
+    if (key === '1') buyUpgrade('damage');
+    if (key === '2') buyUpgrade('speed');
+    if (key === '3') buyUpgrade('health');
+    if (key === '4') buyUpgrade('defense');
+    if (key === '5') buyUpgrade('firerate');
+    if (key === '6') buyUpgrade('regen');
+    if (key === 'enter') continueToNextRound();
+  }
+
+  if (awaitingEndlessChoice) {
+    if (key === 'e') startEndlessMode();
+    if (key === 'r') resetGame();
+  }
+});
+
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+canvas.addEventListener('click', e => {
+  const mx = e.clientX;
+  const my = e.clientY;
+
+  if (gameOver) {
+    resetGame();
+    return;
+  }
+
+  if (awaitingEndlessChoice) {
+    for (const btn of uiButtons) {
+      const inside = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+      if (inside) {
+        if (btn.type === 'endless') startEndlessMode();
+        if (btn.type === 'restart') resetGame();
+        return;
+      }
+    }
+    return;
+  }
+
+  if (endlessMode && !inShop) {
+    const insideShop = mx >= endlessShopButton.x && mx <= endlessShopButton.x + endlessShopButton.w
+      && my >= endlessShopButton.y && my <= endlessShopButton.y + endlessShopButton.h;
+    if (insideShop) {
+      openShop();
+      return;
+    }
+  }
+
+  if (inShop) {
+    for (const btn of shopButtons) {
+      const inside = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+      if (inside) {
+        if (btn.type === 'continue') continueToNextRound();
+        else buyUpgrade(btn.type);
+        return;
+      }
+    }
+    return;
+  }
+
+  shoot(mx, my);
+});
+
+function canDash() {
+  return !gameOver && !inShop && !awaitingEndlessChoice && player.dashCooldown <= 0;
+}
+
+function triggerDash() {
+  const angle = Math.atan2(aimY - player.y, aimX - player.x);
+  const dashDistance = 130;
+  player.x += Math.cos(angle) * dashDistance;
+  player.y += Math.sin(angle) * dashDistance;
+  player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+  player.y = Math.max(player.r, Math.min(H - player.r, player.y));
+  player.dashCooldown = 2.2;
+  player.dashInvuln = 0.2;
+  addDamageNumber(player.x - 10, player.y - 34, 'DASH!', '#8df7ff');
+}
+
+function shoot(tx, ty) {
+  const angle = Math.atan2(ty - player.y, tx - player.x);
+  const speed = 700 * player.fireRateMult * (frenzyTimer > 0 ? 1.35 : 1);
+  bullets.push({
+    x: player.x,
+    y: player.y,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    life: 1.2,
+  });
+}
+
+function createMonster(baseRound, forceType = null) {
+  const side = Math.floor(Math.random() * 4);
+  let x = Math.random() * W;
+  let y = Math.random() * H;
+  if (side === 0) x = -40;
+  if (side === 1) x = W + 40;
+  if (side === 2) y = -40;
+  if (side === 3) y = H + 40;
+
+  const type = forceType || monsterTypes[Math.floor(Math.random() * monsterTypes.length)];
+
+  return {
+    x,
+    y,
+    type: type.name,
+    color: type.color,
+    r: type.r,
+    speed: (70 + baseRound * 12) * type.speedMult,
+    health: (10 + (baseRound - 1) * 14) * type.hpMult,
+    maxHealth: (10 + (baseRound - 1) * 14) * type.hpMult,
+    contactDamagePerSecond: (5 + (baseRound - 1) * 1.5) * type.damageMult,
+    isBoss: false,
+  };
+}
+
+function spawnBoss() {
+  const boss = createMonster(round + 2, { name: 'boss', color: '#7f39fb', r: 40, speedMult: 0.9, hpMult: 4.2, damageMult: 2.2 });
+  boss.isBoss = true;
+  boss.type = 'boss';
+  boss.color = '#7f39fb';
+  boss.health = (160 + round * 35) * (endlessMode ? 1.8 : 1);
+  boss.maxHealth = boss.health;
+  boss.speed = 90 + round * 6;
+  boss.contactDamagePerSecond = 25 + round * 3;
+  enemies.push(boss);
+}
+
+function spawnWave() {
+  enemies = [];
+  bullets = [];
+  damageNumbers = [];
+  powerUps = [];
+
+  const count = 5 + round * 2;
+  for (let i = 0; i < count; i++) enemies.push(createMonster(round));
+
+  if (round % 5 === 0) spawnBoss();
+}
+
+function openShop() {
+  if (gameOver || awaitingEndlessChoice) return;
+  inShop = true;
+  bullets = [];
+}
+
+function continueToNextRound() {
+  if (!inShop) return;
+  inShop = false;
+  if (!endlessMode) {
+    round++;
+    if (round > 20) {
+      awaitingEndlessChoice = true;
+      enemies = [];
+      bullets = [];
+      return;
+    }
+  }
+  spawnWave();
+}
+
+function buyUpgrade(type) {
+  const costs = {
+    damage: 6,
+    speed: 5,
+    health: 8,
+    defense: 7,
+    firerate: 10,
+    regen: 12,
+  };
+  if (coins < costs[type]) return;
+
+  coins -= costs[type];
+  if (type === 'damage') player.damage += 3;
+  if (type === 'speed') player.speed += 20;
+  if (type === 'health') {
+    player.maxHealth += 25;
+    player.health = Math.min(player.maxHealth, player.health + 30);
+  }
+  if (type === 'defense') player.contactDefense += 1.5;
+  if (type === 'firerate') player.fireRateMult += 0.1;
+  if (type === 'regen') player.regenPerSecond += 0.8;
+}
+
+function grantRandomUpgrade() {
+  const options = ['damage', 'speed', 'health', 'defense', 'firerate', 'regen'];
+  const pick = options[Math.floor(Math.random() * options.length)];
+
+  if (pick === 'damage') player.damage += 4;
+  if (pick === 'speed') player.speed += 25;
+  if (pick === 'health') {
+    player.maxHealth += 30;
+    player.health = Math.min(player.maxHealth, player.health + 35);
+  }
+  if (pick === 'defense') player.contactDefense += 2;
+  if (pick === 'firerate') player.fireRateMult += 0.15;
+  if (pick === 'regen') player.regenPerSecond += 1.2;
+
+  addDamageNumber(player.x - 20, player.y - 45, `Boss reward: ${pick}!`, '#9be8ff');
+}
+
+function maybeDropPowerUp(x, y, isBoss) {
+  const chance = isBoss ? 0.75 : 0.11;
+  if (Math.random() > chance) return;
+  const type = Math.random() < 0.5 ? 'heal' : 'frenzy';
+  powerUps.push({ x, y, r: 10, type, life: 8 });
+}
+
+function collectPowerUps(dt) {
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    const p = powerUps[i];
+    p.life -= dt;
+    if (p.life <= 0) {
+      powerUps.splice(i, 1);
+      continue;
+    }
+
+    const dx = player.x - p.x;
+    const dy = player.y - p.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < 120) {
+      p.x += dx * dt * 3.4;
+      p.y += dy * dt * 3.4;
+    }
+
+    if (dist < player.r + p.r) {
+      if (p.type === 'heal') {
+        player.health = Math.min(player.maxHealth, player.health + 28);
+        addDamageNumber(player.x - 20, player.y - 52, '+HEAL', '#7fffd4');
+      } else {
+        frenzyTimer = Math.max(frenzyTimer, 6);
+        addDamageNumber(player.x - 20, player.y - 52, 'FRENZY!', '#ffb3ff');
+      }
+      powerUps.splice(i, 1);
+    }
+  }
+}
+
+function registerKill(isBoss, x, y, eR) {
+  killStreak += 1;
+  streakTimer = 3.2;
+  streakMultiplier = 1 + Math.floor(killStreak / 5) * 0.2;
+
+  const reward = isBoss ? 10 : Math.max(1, Math.floor(1 * streakMultiplier));
+  coins += reward;
+
+  if (isBoss) {
+    grantRandomUpgrade();
+    addDamageNumber(x - 25, y - eR - 8, `+${reward} coins`, '#89f7a1');
+  } else {
+    addDamageNumber(x, y - eR - 8, `+${reward} coin${reward > 1 ? 's' : ''}`, '#89f7a1');
+  }
+
+  maybeDropPowerUp(x, y, isBoss);
+}
+
+function addDamageNumber(x, y, text, color = '#ffd54f') {
+  damageNumbers.push({ x, y, text, color, life: 0.9, vy: -28 });
+}
+
+function updateDamageNumbers(dt) {
+  for (let i = damageNumbers.length - 1; i >= 0; i--) {
+    const n = damageNumbers[i];
+    n.y += n.vy * dt;
+    n.life -= dt;
+    if (n.life <= 0) damageNumbers.splice(i, 1);
+  }
+}
+
+function maybeSpawnEndlessBoss() {
+  if (!endlessMode) return;
+  if (survivalTime < nextRandomBossAt) return;
+
+  spawnBoss();
+  addDamageNumber(W / 2 - 60, 80, 'Random Boss Spawned!', '#ff9ced');
+  nextRandomBossAt = survivalTime + 12 + Math.random() * 14;
+}
+
+function scaleEndlessDifficulty() {
+  for (const e of enemies) {
+    e.speed *= 2;
+    e.health *= 2;
+    e.maxHealth *= 2;
+    e.contactDamagePerSecond *= 2;
+  }
+  addDamageNumber(W / 2 - 70, 110, 'Endless difficulty x2!', '#ff8a80');
+}
+
+function startEndlessMode() {
+  awaitingEndlessChoice = false;
+  endlessMode = true;
+  inShop = false;
+  bullets = [];
+  enemies = [];
+  round = 21;
+  endlessDifficultyTimer = 0;
+  nextRandomBossAt = survivalTime + 10 + Math.random() * 8;
+  spawnWave();
+}
+
+function update(dt) {
+  updateDamageNumbers(dt);
+  if (gameOver || inShop || awaitingEndlessChoice) return;
+
+  survivalTime += dt;
+  if (player.dashCooldown > 0) player.dashCooldown -= dt;
+  if (player.dashInvuln > 0) player.dashInvuln -= dt;
+
+  if (streakTimer > 0) {
+    streakTimer -= dt;
+    if (streakTimer <= 0) {
+      killStreak = 0;
+      streakMultiplier = 1;
+    }
+  }
+
+  if (frenzyTimer > 0) frenzyTimer -= dt;
+
+  if (player.regenPerSecond > 0) {
+    player.health = Math.min(player.maxHealth, player.health + player.regenPerSecond * dt);
+  }
+
+  if (endlessMode) {
+    endlessDifficultyTimer += dt;
+    if (endlessDifficultyTimer >= 10) {
+      endlessDifficultyTimer = 0;
+      scaleEndlessDifficulty();
+    }
+    maybeSpawnEndlessBoss();
+  }
+
+  let mx = 0;
+  let my = 0;
+  if (keys.w) my -= 1;
+  if (keys.s) my += 1;
+  if (keys.a) mx -= 1;
+  if (keys.d) mx += 1;
+
+  const len = Math.hypot(mx, my);
+  if (len > 0) {
+    mx /= len;
+    my /= len;
+  }
+
+  const speedBoost = frenzyTimer > 0 ? 1.22 : 1;
+  player.x = Math.max(player.r, Math.min(W - player.r, player.x + mx * player.speed * speedBoost * dt));
+  player.y = Math.max(player.r, Math.min(H - player.r, player.y + my * player.speed * speedBoost * dt));
+
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+
+    const outOfBounds = b.x < -10 || b.x > W + 10 || b.y < -10 || b.y > H + 10;
+    if (b.life <= 0 || outOfBounds) bullets.splice(i, 1);
+  }
+
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    const ang = Math.atan2(player.y - e.y, player.x - e.x);
+    e.x += Math.cos(ang) * e.speed * dt;
+    e.y += Math.sin(ang) * e.speed * dt;
+
+    if (Math.hypot(player.x - e.x, player.y - e.y) < player.r + e.r) {
+      if (player.dashInvuln <= 0) {
+        const effectiveDamage = Math.max(1, e.contactDamagePerSecond - player.contactDefense);
+        player.health -= effectiveDamage * dt;
+        addDamageNumber(player.x + (Math.random() - 0.5) * 20, player.y - 28, `-${effectiveDamage.toFixed(0)}`, '#ff6b6b');
+        if (player.health <= 0) {
+          player.health = 0;
+          gameOver = true;
+        }
+      }
+    }
+
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      if (Math.hypot(b.x - e.x, b.y - e.y) < e.r + 4) {
+        const crit = Math.random() < 0.15;
+        const dmg = crit ? Math.floor(player.damage * 1.8) : player.damage;
+        e.health -= dmg;
+        addDamageNumber(e.x + (Math.random() - 0.5) * 16, e.y - e.r, crit ? `CRIT ${dmg}` : `-${dmg}`, crit ? '#ff9d00' : '#ffec80');
+        bullets.splice(j, 1);
+        if (e.health <= 0) {
+          enemies.splice(i, 1);
+          registerKill(e.isBoss, e.x, e.y, e.r);
+          break;
+        }
+      }
+    }
+  }
+
+  collectPowerUps(dt);
+
+  if (!gameOver && enemies.length === 0) {
+    if (endlessMode) spawnWave();
+    else openShop();
+  }
+}
+
+function drawHealthBar(x, y, w, h, value, max) {
+  ctx.fillStyle = 'black';
+  ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+  ctx.fillStyle = 'red';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = 'lime';
+  ctx.fillRect(x, y, (value / max) * w, h);
+}
+
+function drawPlayerCharacter() {
+  if (player.dashInvuln > 0) {
+    ctx.fillStyle = 'rgba(141, 247, 255, 0.35)';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r + 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#f5c7a9';
+  ctx.beginPath();
+  ctx.arc(player.x, player.y - 20, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = frenzyTimer > 0 ? '#f062ff' : '#38c5ff';
+  ctx.fillRect(player.x - 8, player.y - 10, 16, 24);
+
+  ctx.strokeStyle = '#f5c7a9';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(player.x - 7, player.y - 2);
+  ctx.lineTo(player.x - 16, player.y + 8);
+  ctx.moveTo(player.x + 7, player.y - 2);
+  ctx.lineTo(player.x + 16, player.y + 8);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#1f3f7a';
+  ctx.beginPath();
+  ctx.moveTo(player.x - 4, player.y + 14);
+  ctx.lineTo(player.x - 8, player.y + 28);
+  ctx.moveTo(player.x + 4, player.y + 14);
+  ctx.lineTo(player.x + 8, player.y + 28);
+  ctx.stroke();
+}
+
+function drawMonster(e) {
+  if (e.type === 'slime') {
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.ellipse(e.x, e.y + 3, e.r, e.r * 0.75, 0, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (e.type === 'goblin') {
+    ctx.fillStyle = e.color;
+    ctx.fillRect(e.x - e.r * 0.6, e.y - e.r * 0.6, e.r * 1.2, e.r * 1.2);
+    ctx.fillStyle = '#2b2b2b';
+    ctx.fillRect(e.x - e.r * 0.15, e.y - e.r * 0.15, e.r * 0.3, e.r * 0.3);
+  } else if (e.type === 'skeleton') {
+    ctx.strokeStyle = e.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y - 6, e.r * 0.35, 0, Math.PI * 2);
+    ctx.moveTo(e.x, e.y - e.r * 0.6);
+    ctx.lineTo(e.x, e.y + e.r * 0.6);
+    ctx.moveTo(e.x - e.r * 0.45, e.y - e.r * 0.2);
+    ctx.lineTo(e.x + e.r * 0.45, e.y - e.r * 0.2);
+    ctx.moveTo(e.x, e.y + e.r * 0.6);
+    ctx.lineTo(e.x - e.r * 0.4, e.y + e.r);
+    ctx.moveTo(e.x, e.y + e.r * 0.6);
+    ctx.lineTo(e.x + e.r * 0.4, e.y + e.r);
+    ctx.stroke();
+  } else if (e.type === 'boss') {
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffe082';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.r + 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText('BOSS', e.x - 20, e.y + 5);
+  } else {
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffd3c8';
+    ctx.fillRect(e.x - e.r * 0.3, e.y - e.r * 0.2, e.r * 0.6, e.r * 0.25);
+  }
+}
+
+function drawPowerUp(p) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+  ctx.fillStyle = p.type === 'heal' ? '#6fffa2' : '#ff8bff';
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#0b1b2a';
+  ctx.font = 'bold 12px Arial';
+  ctx.fillText(p.type === 'heal' ? '+' : 'F', p.x - 3, p.y + 4);
+}
+
+function drawGameOverOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 56px Arial';
+  ctx.fillText('GAME OVER', W / 2, H / 2 - 20);
+  ctx.font = 'bold 30px Arial';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText('RESTART', W / 2, H / 2 + 35);
+  ctx.font = '20px Arial';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Click anywhere to restart', W / 2, H / 2 + 70);
+  ctx.textAlign = 'left';
+}
+
+function drawEndlessChoiceOverlay() {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 44px Arial';
+  ctx.fillText('You cleared Round 20!', W / 2, H / 2 - 120);
+  ctx.font = '24px Arial';
+  ctx.fillText('Choose what to do next:', W / 2, H / 2 - 80);
+
+  uiButtons = [];
+
+  const btnW = 300;
+  const btnH = 58;
+  const bx = W / 2 - btnW / 2;
+
+  ctx.fillStyle = '#5d3fd3';
+  ctx.fillRect(bx, H / 2 - 30, btnW, btnH);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 24px Arial';
+  ctx.fillText('Start Endless [E]', W / 2, H / 2 + 8);
+  uiButtons.push({ x: bx, y: H / 2 - 30, w: btnW, h: btnH, type: 'endless' });
+
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(bx, H / 2 + 44, btnW, btnH);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Restart Run [R]', W / 2, H / 2 + 82);
+  uiButtons.push({ x: bx, y: H / 2 + 44, w: btnW, h: btnH, type: 'restart' });
+
+  ctx.textAlign = 'left';
+}
+
+function drawShopOverlay() {
+  ctx.fillStyle = 'rgba(8,16,28,0.78)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 46px Arial';
+  ctx.fillText('SHOP', W / 2, 90);
+  ctx.font = '20px Arial';
+  ctx.fillStyle = '#b9d8ff';
+  ctx.fillText(endlessMode ? 'Game paused while in shop' : `Round ${round} cleared! Spend coins before Round ${round + 1}`, W / 2, 125);
+
+  const boxW = 560;
+  const boxH = 50;
+  const startX = W / 2 - boxW / 2;
+  const startY = 160;
+  const gap = 12;
+
+  const items = [
+    { type: 'damage', label: '[1] +3 Damage', cost: 6 },
+    { type: 'speed', label: '[2] +20 Move Speed', cost: 5 },
+    { type: 'health', label: '[3] +25 Max HP (+heal)', cost: 8 },
+    { type: 'defense', label: '[4] +1.5 Contact Defense', cost: 7 },
+    { type: 'firerate', label: '[5] +10% Bullet Speed', cost: 10 },
+    { type: 'regen', label: '[6] +0.8 HP/s Regen', cost: 12 },
+  ];
+
+  shopButtons = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const x = startX;
+    const y = startY + i * (boxH + gap);
+    const affordable = coins >= item.cost;
+
+    ctx.fillStyle = affordable ? '#173b5f' : '#353535';
+    ctx.fillRect(x, y, boxW, boxH);
+    ctx.strokeStyle = affordable ? '#80d3ff' : '#727272';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, boxW, boxH);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(item.label, x + 16, y + 32);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = affordable ? '#ffd54f' : '#aaaaaa';
+    ctx.fillText(`${item.cost} coins`, x + boxW - 16, y + 32);
+
+    shopButtons.push({ x, y, w: boxW, h: boxH, type: item.type });
+  }
+
+  const continueW = 300;
+  const continueH = 52;
+  const continueX = W / 2 - continueW / 2;
+  const continueY = startY + items.length * (boxH + gap) + 12;
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(continueX, continueY, continueW, continueH);
+  ctx.strokeStyle = '#9cff9f';
+  ctx.strokeRect(continueX, continueY, continueW, continueH);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(endlessMode ? 'Close Shop [Enter]' : 'Continue [Enter]', W / 2, continueY + 34);
+  shopButtons.push({ x: continueX, y: continueY, w: continueW, h: continueH, type: 'continue' });
+
+  ctx.font = '18px Arial';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Click an upgrade or use 1-6. Press Enter to continue.', W / 2, continueY + 82);
+  ctx.textAlign = 'left';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  drawPlayerCharacter();
+  drawHealthBar(player.x - 30, player.y - 50, 60, 8, player.health, player.maxHealth);
+
+  for (const e of enemies) drawHealthBar(e.x - 20, e.y - 35, 40, 6, e.health, e.maxHealth);
+  for (const e of enemies) drawMonster(e);
+  for (const p of powerUps) drawPowerUp(p);
+
+  ctx.fillStyle = 'yellow';
+  for (const b of bullets) {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.font = '18px Arial';
+  ctx.fillStyle = 'white';
+  ctx.fillText(`Round: ${round}`, 20, 30);
+  ctx.fillText(`Damage: ${player.damage}`, 20, 55);
+  ctx.fillText(`Time: ${survivalTime.toFixed(1)}s`, 20, 80);
+  ctx.fillText(`Combo x${streakMultiplier.toFixed(1)}`, 20, 105);
+  ctx.fillText(`Dash: ${player.dashCooldown <= 0 ? 'READY [Shift]' : player.dashCooldown.toFixed(1) + 's'}`, 20, 130);
+
+  if (frenzyTimer > 0) {
+    ctx.fillStyle = '#ff9dff';
+    ctx.fillText(`Frenzy ${frenzyTimer.toFixed(1)}s`, 20, 155);
+  }
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 22px Arial';
+  ctx.fillText(`Coins: ${coins}`, W - 20, 34);
+
+  if (endlessMode) {
+    endlessShopButton.x = W - 130;
+    endlessShopButton.y = 44;
+    ctx.fillStyle = '#2c5f8a';
+    ctx.fillRect(endlessShopButton.x, endlessShopButton.y, endlessShopButton.w, endlessShopButton.h);
+    ctx.strokeStyle = '#8dd7ff';
+    ctx.strokeRect(endlessShopButton.x, endlessShopButton.y, endlessShopButton.w, endlessShopButton.h);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText('Shop', W - 65, 67);
+  }
+  ctx.textAlign = 'left';
+
+  for (const n of damageNumbers) {
+    const alpha = Math.max(0, Math.min(1, n.life / 0.9));
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = n.color;
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(n.text, n.x, n.y);
+  }
+  ctx.globalAlpha = 1;
+
+  if (inShop) drawShopOverlay();
+  if (awaitingEndlessChoice) drawEndlessChoiceOverlay();
+  if (gameOver) drawGameOverOverlay();
+}
+
+function loop() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+loop();
+</script>
+</body>
+</html>
