@@ -70,6 +70,8 @@ function resetGame() {
     regenPerSecond: 0,
     dashCooldown: 0,
     dashInvuln: 0,
+    attackInterval: 0.22,
+    autoShootCooldown: 0,
   };
 
   bullets = [];
@@ -171,7 +173,6 @@ canvas.addEventListener('click', e => {
     return;
   }
 
-  shoot(mx, my);
 });
 
 function canDash() {
@@ -190,7 +191,7 @@ function triggerDash() {
   addDamageNumber(player.x - 10, player.y - 34, 'DASH!', '#8df7ff');
 }
 
-function shoot(tx, ty) {
+function shootToward(tx, ty) {
   const angle = Math.atan2(ty - player.y, tx - player.x);
   const speed = 700 * player.fireRateMult * (frenzyTimer > 0 ? 1.35 : 1);
   bullets.push({
@@ -295,21 +296,45 @@ function buyUpgrade(type) {
   if (type === 'regen') player.regenPerSecond += 0.8;
 }
 
+
+function getRandomRarity() {
+  const roll = Math.random();
+  if (roll < 0.5) return { name: 'Common', color: '#ffffff', mult: 1.08 };
+  if (roll < 0.8) return { name: 'Rare', color: '#7ec8ff', mult: 1.15 };
+  if (roll < 0.95) return { name: 'Epic', color: '#c68cff', mult: 1.28 };
+  return { name: 'Legendary', color: '#ffcc66', mult: 1.45 };
+}
+
+function applyRandomRarityUpgrade() {
+  const rarity = getRandomRarity();
+  const options = [
+    { key: 'damage', label: 'Damage', apply: () => { player.damage *= rarity.mult; } },
+    { key: 'speed', label: 'Move Speed', apply: () => { player.speed *= rarity.mult; } },
+    { key: 'health', label: 'Max HP', apply: () => { player.maxHealth *= rarity.mult; player.health = Math.min(player.maxHealth, player.health * (1 + (rarity.mult - 1) * 0.7)); } },
+    { key: 'defense', label: 'Defense', apply: () => { player.contactDefense = (player.contactDefense + 1) * (1 + (rarity.mult - 1) * 0.6); } },
+    { key: 'firerate', label: 'Attack Speed', apply: () => { player.attackInterval = Math.max(0.06, player.attackInterval / rarity.mult); } },
+    { key: 'regen', label: 'Regen', apply: () => { player.regenPerSecond = Math.max(0.2, player.regenPerSecond + 0.5) * (1 + (rarity.mult - 1) * 0.8); } },
+  ];
+
+  const picked = options[Math.floor(Math.random() * options.length)];
+  picked.apply();
+  addDamageNumber(player.x - 34, player.y - 52, `${rarity.name} ${picked.label}!`, rarity.color);
+}
+
+function autoShoot(dt) {
+  player.autoShootCooldown -= dt;
+  if (player.autoShootCooldown > 0) return;
+  if (gameOver || inShop || awaitingEndlessChoice) return;
+
+  const tx = Number.isFinite(aimX) ? aimX : player.x + 1;
+  const ty = Number.isFinite(aimY) ? aimY : player.y;
+  shootToward(tx, ty);
+  player.autoShootCooldown = Math.max(0.05, player.attackInterval / (frenzyTimer > 0 ? 1.35 : 1));
+}
+
 function grantRandomUpgrade() {
-  const options = ['damage', 'speed', 'health', 'defense', 'firerate', 'regen'];
-  const pick = options[Math.floor(Math.random() * options.length)];
-
-  if (pick === 'damage') player.damage += 4;
-  if (pick === 'speed') player.speed += 25;
-  if (pick === 'health') {
-    player.maxHealth += 30;
-    player.health = Math.min(player.maxHealth, player.health + 35);
-  }
-  if (pick === 'defense') player.contactDefense += 2;
-  if (pick === 'firerate') player.fireRateMult += 0.15;
-  if (pick === 'regen') player.regenPerSecond += 1.2;
-
-  addDamageNumber(player.x - 20, player.y - 45, `Boss reward: ${pick}!`, '#9be8ff');
+  // Boss rewards now roll rarity-based exponential upgrades.
+  applyRandomRarityUpgrade();
 }
 
 function maybeDropPowerUp(x, y, isBoss) {
@@ -433,6 +458,8 @@ function update(dt) {
   if (player.regenPerSecond > 0) {
     player.health = Math.min(player.maxHealth, player.health + player.regenPerSecond * dt);
   }
+
+  autoShoot(dt);
 
   if (endlessMode) {
     endlessDifficultyTimer += dt;
@@ -757,14 +784,15 @@ function draw() {
   ctx.font = '18px Arial';
   ctx.fillStyle = 'white';
   ctx.fillText(`Round: ${round}`, 20, 30);
-  ctx.fillText(`Damage: ${player.damage}`, 20, 55);
+  ctx.fillText(`Damage: ${player.damage.toFixed(1)}`, 20, 55);
   ctx.fillText(`Time: ${survivalTime.toFixed(1)}s`, 20, 80);
-  ctx.fillText(`Combo x${streakMultiplier.toFixed(1)}`, 20, 105);
-  ctx.fillText(`Dash: ${player.dashCooldown <= 0 ? 'READY [Shift]' : player.dashCooldown.toFixed(1) + 's'}`, 20, 130);
+  ctx.fillText(`Atk Spd: ${(1 / player.attackInterval).toFixed(1)}/s`, 20, 105);
+  ctx.fillText(`Combo x${streakMultiplier.toFixed(1)}`, 20, 130);
+  ctx.fillText(`Dash: ${player.dashCooldown <= 0 ? 'READY [Shift]' : player.dashCooldown.toFixed(1) + 's'}`, 20, 155);
 
   if (frenzyTimer > 0) {
     ctx.fillStyle = '#ff9dff';
-    ctx.fillText(`Frenzy ${frenzyTimer.toFixed(1)}s`, 20, 155);
+    ctx.fillText(`Frenzy ${frenzyTimer.toFixed(1)}s`, 20, 180);
   }
 
   ctx.textAlign = 'right';
